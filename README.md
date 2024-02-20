@@ -1,4 +1,4 @@
-# THz-visibility-prediction-and-AP-assignment-simulator
+# THz visibility prediction and AP assignment simulator
 
 ## Description
 
