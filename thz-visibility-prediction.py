@@ -306,14 +306,10 @@ def series_to_supervised(data, n_in=1, n_out=1, diff_ts=1, dropnan=True):
 
 
 for MAX_TS in MAX_TS_ARRAY:
-    for NUM_USERS in NUM_USERS_ARRAY:
+    for NUM_USERS_TRAIN in NUM_USERS_ARRAY:
         for n_steps in N_STEPS_ARRAY:
             for PROFILE in PROFILE_ARRAY:
-                FILENAME = "thz_datasets/OK/SimData-{}-users.csv".format(NUM_USERS)
-                OUTFILENAME = "thz_datasets/output-{}-users-{}-steps-{}-profile-test.csv".format(NUM_USERS, n_steps, PROFILE)
-
-                print("\n    SCENARIO: max_ts = {}, users = {}, steps = {}, profile = {}".format(MAX_TS, NUM_USERS, n_steps,
-                                                                                            PROFILE), file=sys.stderr)
+                FILENAME_TRAIN = "thz_datasets/OK/SimData-{}-users.csv".format(NUM_USERS_TRAIN)
 
                 CURRENT_USER_POSITION_ENABLED = False
                 OTHER_USERS_POSITION_ENABLED = False
@@ -358,6 +354,12 @@ for MAX_TS in MAX_TS_ARRAY:
                 NEARBY_USERS_DISTANCE_THRESHOLD = 0.5
 
                 n_features = NUM_BS  # AP visibility -> output variable
+                if (OTHER_USERS_POSITION_ENABLED or OTHER_USERS_ROTATION_ENABLED or
+                    PREV_TS_OTHER_USERS_POSITION_ENABLED or PREV_TS_OTHER_USERS_ROTATION_ENABLED):
+                    if NUM_USERS_TRAIN != NUM_USERS_TEST:
+                        continue
+                    else:
+                        NUM_USERS = NUM_USERS_TRAIN
                 n_features += (3 if CURRENT_USER_POSITION_ENABLED else 0)
                 n_features += (((NUM_USERS - 1) * 3) if OTHER_USERS_POSITION_ENABLED else 0)
                 n_features += (2 if CURRENT_USER_ROTATION_ENABLED else 0)
@@ -379,7 +381,7 @@ for MAX_TS in MAX_TS_ARRAY:
 
                 random.seed(RANDOM_SEED)
 
-                input_data = load_dataset(FILENAME, MAX_TS, NUM_USERS, NUM_BS, CURRENT_USER_POSITION_ENABLED,
+                input_data_train = load_dataset(FILENAME_TRAIN, MAX_TS, NUM_USERS_TRAIN, NUM_BS, CURRENT_USER_POSITION_ENABLED,
                     PREV_TS_CURRENT_USER_POSITION_ENABLED, OTHER_USERS_POSITION_ENABLED,
                     OTHER_USERS_ROTATION_ENABLED, PREV_TS_OTHER_USERS_POSITION_ENABLED,
                     PREV_TS_OTHER_USERS_ROTATION_ENABLED, CURRENT_USER_ROTATION_ENABLED,
@@ -387,33 +389,27 @@ for MAX_TS in MAX_TS_ARRAY:
                     NEARBY_USERS_DISTANCE_THRESHOLD, PAST_AVAILABLE_TIME_ENABLED,
                     PREV_TS_DISTANCES_INCLUDED_EXPLICITLY_ENABLED, DIRECTION_ENABLED)
 
-                input_data_df = pd.DataFrame(input_data)
-                input_data = input_data_df.iloc[:, :].values
-                input_data = input_data.astype('float32')
+                input_data_df = pd.DataFrame(input_data_train)
+                input_data_train = input_data_df.iloc[:, :].values
+                input_data_train = input_data_train.astype('float32')
 
-                reframed = series_to_supervised(input_data, n_steps, 1, NUM_USERS)
+                reframed_train = series_to_supervised(input_data_train, n_steps, 1, NUM_USERS_TRAIN)
+                # Drop features we don't want to predict
 
 
-                input_data = reframed
+                input_data_train = reframed_train
 
 
                 start_time = time.time()
                 scaler = MinMaxScaler(feature_range=(0, 1))
                 scaler_train = MinMaxScaler(feature_range=(0, 1))
 
-                values = np.array(input_data)
-                train_size = int(0.7 * len(input_data))
-                validation_size = int(0.1 * len(input_data))
+                values_train = np.array(input_data_train)
+                train_size = int(0.7 * len(input_data_train))
+                validation_size = int(0.1 * len(input_data_train))
 
-                train = values[:train_size, :]
-                validation = values[train_size:(train_size + validation_size), :]
-                test = values[(train_size + validation_size):, :]
-
-                all_lines_test = all_lines[(-len(test)):]
-
-                X = values[:, :-n_features_predict]
-                X = scaler.fit_transform(X)
-                y = values[:, -n_features_predict:]
+                train = values_train[:train_size, :]
+                validation = values_train[train_size:(train_size + validation_size), :]
 
                 # split into input and outputs
                 train_X, train_y = train[:, :-
@@ -422,15 +418,13 @@ for MAX_TS in MAX_TS_ARRAY:
                 validation_X, validation_y = validation[:, :-
                                                         n_features_predict], validation[:, -n_features_predict:]
                 validation_X = scaler_train.transform(validation_X)
-                test_X, test_y = test[:, :-n_features_predict], test[:, -n_features_predict:]
-                test_X = scaler_train.fit_transform(test_X)
 
+                # Create network
                 model = Sequential()
 
                 model.add(Dense(units=1000, input_shape=(n_steps * n_features +
                         (n_features - n_features_predict),), activation='relu'))
-                model.add(Dense(units=1000, activation="relu"))
-                # Last layer needs to have 2 units since we are predicting two features
+                model.add(Dense(units=1000, activation="relu"))  # hard_sigmoid
                 model.add(Dense(n_features_predict, activation="sigmoid"))  # sigmoid # hard_sigmoid
                 model.compile(loss='binary_crossentropy',
                             optimizer='sgd', metrics=['accuracy'])
@@ -444,10 +438,9 @@ for MAX_TS in MAX_TS_ARRAY:
                 ##########################################
                 X = train_X
                 y = train_y
-
+                
                 yhat = model.predict(X)  # model.predict(X)
-
-
+                
                 # invert scaling for forecast
                 inv_yhat = np.concatenate((X, yhat), axis=1)
 
@@ -464,9 +457,6 @@ for MAX_TS in MAX_TS_ARRAY:
 
                 inv_y = inv_y.reshape(inv_y.shape[0] * inv_y.shape[1], 1)
                 inv_yhat = inv_yhat.reshape(inv_yhat.shape[0] * inv_yhat.shape[1], 1)
-
-                # print(inv_y)
-                # print(inv_yhat)
 
                 precision = precision_score(inv_y, inv_yhat)
                 print("Training precision: {:.3f}".format(precision), file=sys.stderr)
@@ -477,140 +467,168 @@ for MAX_TS in MAX_TS_ARRAY:
                 accuracy = accuracy_score(inv_y, inv_yhat)
                 print("Training accuracy: {:.3f}".format(accuracy), file=sys.stderr)
 
-                ######################################
-                ### make a prediction for test set ###
-                ######################################
-                X = test_X
-                y = test_y
+                # Process the different test sets
+                for NUM_USERS_TEST in NUM_USERS_ARRAY:
+                    FILENAME_TEST = "thz_datasets/OK/SimData-{}-users.csv".format(NUM_USERS_TEST)
+                    OUTFILENAME = "thz_datasets/output-{}-users_train-{}-users_test-{}-steps-{}-profile-test.csv".format(NUM_USERS_TRAIN, NUM_USERS_TEST, n_steps, PROFILE)
 
-                yhat = model.predict(X)  # model.predict(X)
+                    print("\n    SCENARIO: max_ts = {}, users_train = {}, users_test = {}, steps = {}, profile = {}".format(MAX_TS, NUM_USERS_TRAIN, NUM_USERS_TEST, n_steps, PROFILE), file=sys.stderr)
 
-                # invert scaling for forecast
-                inv_yhat = np.concatenate((X, yhat), axis=1)
+                    input_data_test = load_dataset(FILENAME_TEST, MAX_TS, NUM_USERS_TEST, NUM_BS, CURRENT_USER_POSITION_ENABLED,
+                        PREV_TS_CURRENT_USER_POSITION_ENABLED, OTHER_USERS_POSITION_ENABLED,
+                        OTHER_USERS_ROTATION_ENABLED, PREV_TS_OTHER_USERS_POSITION_ENABLED,
+                        PREV_TS_OTHER_USERS_ROTATION_ENABLED, CURRENT_USER_ROTATION_ENABLED,
+                        PREV_TS_CURRENT_USER_ROTATION_ENABLED, NEARBY_ENABLED,
+                        NEARBY_USERS_DISTANCE_THRESHOLD, PAST_AVAILABLE_TIME_ENABLED,
+                        PREV_TS_DISTANCES_INCLUDED_EXPLICITLY_ENABLED, DIRECTION_ENABLED)
+                    input_data_df = pd.DataFrame(input_data_test)
+                    input_data_test = input_data_df.iloc[:, :].values
+                    input_data_test = input_data_test.astype('float32')
+                    reframed_test = series_to_supervised(input_data_test, n_steps, 1, NUM_USERS_TEST)
+                    input_data_test = reframed_test
 
-                inv_yhat = inv_yhat[:, -n_features_predict:]
+                    test_size = int(0.2 * len(input_data_test))
 
-                y_reshaped = y.reshape(y.shape[0], y.shape[1])
-                inv_y = np.concatenate((X, y_reshaped), axis=1)
+                    values_test = np.array(input_data_test)
+                    test = values_test[-test_size:, :]
 
-                inv_y = inv_y[:, -n_features_predict:]
+                    all_lines_test = all_lines[(-len(test)):]
 
-                inv_yhat_probs = inv_yhat
+                    test_X, test_y = test[:, :-n_features_predict], test[:, -n_features_predict:]
+                    test_X = scaler_train.fit_transform(test_X)
 
-                # Convert float to bool
-                inv_y = np.array([(x > 0.5) for x in inv_y])
-                inv_yhat = np.array([(x > 0.5) for x in inv_yhat])
+                    ######################################
+                    ### make a prediction for test set ###
+                    ######################################
+                    X = test_X
+                    y = test_y
 
-                inv_y_test = inv_y
-                inv_yhat_test = inv_yhat
+                    yhat = model.predict(X)  # model.predict(X)
 
-                inv_y = inv_y.reshape(inv_y.shape[0] * inv_y.shape[1], 1)
-                inv_yhat = inv_yhat.reshape(inv_yhat.shape[0] * inv_yhat.shape[1], 1)
+                    # invert scaling for forecast
+                    inv_yhat = np.concatenate((X, yhat), axis=1)
 
-                inv_y_test_reshaped = inv_y
-                inv_yhat_test_reshaped = inv_yhat
+                    inv_yhat = inv_yhat[:, -n_features_predict:]
 
-                test_precision = precision_score(inv_y, inv_yhat)
-                print("Test precision: {:.3f}".format(test_precision), file=sys.stderr)
-                test_recall = recall_score(inv_y, inv_yhat)
-                print("Test recall: {:.3f}".format(test_recall), file=sys.stderr)
-                test_f1 = f1_score(inv_y, inv_yhat)
-                print("Test f1-score: {:.3f}".format(test_f1), file=sys.stderr)
-                test_accuracy = accuracy_score(inv_y, inv_yhat)
-                print("Test accuracy: {:.3f}".format(test_accuracy), file=sys.stderr)
+                    y_reshaped = y.reshape(y.shape[0], y.shape[1])
+                    inv_y = np.concatenate((X, y_reshaped), axis=1)
 
+                    inv_y = inv_y[:, -n_features_predict:]
 
-                inv_y = inv_y_test[NUM_USERS:]
-                inv_y_no_reshaped = inv_y
-                inv_y = inv_y.reshape(inv_y.shape[0] * inv_y.shape[1], 1)
-                naive_y = inv_y_test[:-NUM_USERS]
-                naive_y_no_reshaped = naive_y
-                naive_y = naive_y.reshape(naive_y.shape[0] * naive_y.shape[1], 1)
+                    inv_yhat_probs = inv_yhat
 
-                precision = precision_score(inv_y, naive_y)
-                print("", file=sys.stderr)
-                print("Naive test precision: {:.3f}".format(precision), file=sys.stderr)
-                recall = recall_score(inv_y, naive_y)
-                print("Naive test recall: {:.3f}".format(recall), file=sys.stderr)
-                f1 = f1_score(inv_y, naive_y)
-                print("Naive test f1-score: {:.3f}".format(f1), file=sys.stderr)
-                accuracy = accuracy_score(inv_y, naive_y)
-                print("Naive test accuracy: {:.3f}".format(accuracy), file=sys.stderr)
+                    # Convert float to bool
+                    inv_y = np.array([(x > 0.5) for x in inv_y])
+                    inv_yhat = np.array([(x > 0.5) for x in inv_yhat])
 
-                # AVAILABILITY METRIC
+                    inv_y_test = inv_y
+                    inv_yhat_test = inv_yhat
 
-                # NN-based: Pick the one with the highest probability
-                chosen_bs_ids = [np.argmax(x) for x in inv_yhat_probs[NUM_USERS:]]
-                #availability = [inv_y_test[NUM_USERS + i][chosen_bs_ids[i]] for i in range(len(chosen_bs_ids))]
-                availability = [inv_y_no_reshaped[i][chosen_bs_ids[i]]
-                                for i in range(len(chosen_bs_ids))]
-                print("\nTest availability: {:.3f}".format(
-                    sum(availability) / len(availability)), file=sys.stderr)
-                test_availability = availability
+                    inv_y = inv_y.reshape(inv_y.shape[0] * inv_y.shape[1], 1)
+                    inv_yhat = inv_yhat.reshape(inv_yhat.shape[0] * inv_yhat.shape[1], 1)
+
+                    inv_y_test_reshaped = inv_y
+                    inv_yhat_test_reshaped = inv_yhat
+
+                    test_precision = precision_score(inv_y, inv_yhat)
+                    print("Test precision: {:.3f}".format(test_precision), file=sys.stderr)
+                    test_recall = recall_score(inv_y, inv_yhat)
+                    print("Test recall: {:.3f}".format(test_recall), file=sys.stderr)
+                    test_f1 = f1_score(inv_y, inv_yhat)
+                    print("Test f1-score: {:.3f}".format(test_f1), file=sys.stderr)
+                    test_accuracy = accuracy_score(inv_y, inv_yhat)
+                    print("Test accuracy: {:.3f}".format(test_accuracy), file=sys.stderr)
 
 
-                # Naive: Pick random one between the True ones in the previous interval
-                chosen_bs_ids = [(random.choice([i for i in range(len(x)) if x[i] == True])
-                                if True in x else 0) for x in naive_y_no_reshaped]
-                availability = [inv_y_no_reshaped[i][chosen_bs_ids[i]]
-                                for i in range(len(chosen_bs_ids))]
-                print("Naive test availability: {:.3f}".format(
-                    sum(availability) / len(availability)), file=sys.stderr)
-                naive_availability = availability
+                    inv_y = inv_y_test[NUM_USERS_TEST:]
+                    inv_y_no_reshaped = inv_y
+                    inv_y = inv_y.reshape(inv_y.shape[0] * inv_y.shape[1], 1)
+                    naive_y = inv_y_test[:-NUM_USERS_TEST]
+                    naive_y_no_reshaped = naive_y
+                    naive_y = naive_y.reshape(naive_y.shape[0] * naive_y.shape[1], 1)
 
-                # Ideal: Pick a real True one
-                chosen_bs_ids = [np.argmax(x) for x in inv_y_test]
-                availability = [inv_y_test[i][chosen_bs_ids[i]]
-                                for i in range(len(chosen_bs_ids))]
-                print("Ideal test availability: {:.3f}".format(
-                    sum(availability) / len(availability)), file=sys.stderr)
-                ideal_availability = availability
+                    precision = precision_score(inv_y, naive_y)
+                    print("", file=sys.stderr)
+                    print("Naive test precision: {:.3f}".format(precision), file=sys.stderr)
+                    recall = recall_score(inv_y, naive_y)
+                    print("Naive test recall: {:.3f}".format(recall), file=sys.stderr)
+                    f1 = f1_score(inv_y, naive_y)
+                    print("Naive test f1-score: {:.3f}".format(f1), file=sys.stderr)
+                    accuracy = accuracy_score(inv_y, naive_y)
+                    print("Naive test accuracy: {:.3f}".format(accuracy), file=sys.stderr)
 
-                with open(OUTFILENAME, 'w') as outfile:
-                    for i in range(len(all_lines_test)):
-                        # To have binary output
-                        # print("{};{}".format(all_lines_test[i], ";".join(
-                        #     str(int(x)) for x in inv_yhat_test[i])), file=outfile)
-                        # To have [0, 1] probability output
-                        print("{};{}".format(all_lines_test[i], ";".join(
-                            str(float(x)) for x in inv_yhat_probs[i])), file=outfile)
+                    # AVAILABILITY METRIC
 
-                # aggregate by timestamp
-                test_availability_trimmed = test_availability[:(len(test_availability)-(len(test_availability) % NUM_USERS))]
-                naive_availability_trimmed = naive_availability[:(len(naive_availability)-(len(naive_availability) % NUM_USERS))]
-                ideal_availability_trimmed = ideal_availability[:(len(ideal_availability)-(len(ideal_availability) % NUM_USERS))]
-                test_availability_aggregated = [sum(x)/len(x) for x in np.reshape(test_availability_trimmed, (-1, NUM_USERS))]
-                naive_availability_aggregated = [sum(x)/len(x) for x in np.reshape(naive_availability_trimmed, (-1, NUM_USERS))]
-                ideal_availability_aggregated = [sum(x)/len(x) for x in np.reshape(ideal_availability_trimmed, (-1, NUM_USERS))]
-                test_availability_trimmed = test_availability[:(len(test_availability)-(len(test_availability) % 10))]
+                    # NN-based: Pick the one with the highest prob
+                    chosen_bs_ids = [np.argmax(x) for x in inv_yhat_probs[NUM_USERS_TEST:]]
+                    availability = [inv_y_no_reshaped[i][chosen_bs_ids[i]]
+                                    for i in range(len(chosen_bs_ids))]
+                    print("\nTest availability: {:.3f}".format(
+                        sum(availability) / len(availability)), file=sys.stderr)
+                    test_availability = availability
 
-                inv_y_test_reshaped_trimmed = inv_y_test_reshaped[:(len(inv_y_test_reshaped)-(len(inv_y_test_reshaped) % (NUM_USERS * NUM_BS)))]
-                inv_yhat_test_reshaped_trimmed = inv_yhat_test_reshaped[:(len(inv_yhat_test_reshaped)-(len(inv_yhat_test_reshaped) % (NUM_USERS * NUM_BS)))]
-                inv_y_test_aggregated = np.reshape(inv_y_test_reshaped_trimmed, (-1, (NUM_USERS * NUM_BS)))
-                inv_yhat_test_aggregated = np.reshape(inv_yhat_test_reshaped_trimmed, (-1, (NUM_USERS * NUM_BS)))
+                    # Naive: Pick random one between the True ones in the previous interval
+                    chosen_bs_ids = [(random.choice([i for i in range(len(x)) if x[i] == True])
+                                    if True in x else 0) for x in naive_y_no_reshaped]
+                    availability = [inv_y_no_reshaped[i][chosen_bs_ids[i]]
+                                    for i in range(len(chosen_bs_ids))]
+                    print("Naive test availability: {:.3f}".format(
+                        sum(availability) / len(availability)), file=sys.stderr)
+                    naive_availability = availability
 
-                test_precision_aggregated = [precision_score(y, yhat) for y, yhat in zip(inv_y_test_aggregated, inv_yhat_test_aggregated)]
-                test_recall_aggregated = [recall_score(y, yhat) for y, yhat in zip(inv_y_test_aggregated, inv_yhat_test_aggregated)]
-                test_f1_aggregated = [f1_score(y, yhat) for y, yhat in zip(inv_y_test_aggregated, inv_yhat_test_aggregated)]
-                test_accuracy_aggregated = [accuracy_score(y, yhat) for y, yhat in zip(inv_y_test_aggregated, inv_yhat_test_aggregated)]
+                    # Ideal: Pick a real True one
+                    chosen_bs_ids = [np.argmax(x) for x in inv_y_test]
+                    availability = [inv_y_test[i][chosen_bs_ids[i]]
+                                    for i in range(len(chosen_bs_ids))]
+                    print("Ideal test availability: {:.3f}".format(
+                        sum(availability) / len(availability)), file=sys.stderr)
+                    ideal_availability = availability
 
-                test_precision_mci = mean_confidence_interval_v2(test_precision_aggregated)
-                test_recall_mci = mean_confidence_interval_v2(test_recall_aggregated)
-                test_f1_mci = mean_confidence_interval_v2(test_f1_aggregated)
-                test_accuracy_mci = mean_confidence_interval_v2(test_accuracy_aggregated)
-                test_availability_mci = mean_confidence_interval_v2(test_availability_aggregated)
-                naive_availability_mci = mean_confidence_interval_v2(naive_availability_aggregated)
-                ideal_availability_mci = mean_confidence_interval_v2(ideal_availability_aggregated)
+                    with open(OUTFILENAME, 'w') as outfile:
+                        for i in range(len(all_lines_test)):
+                            # To have binary output
+                            # print("{};{}".format(all_lines_test[i], ";".join(
+                            #     str(int(x)) for x in inv_yhat_test[i])), file=outfile)
+                            # To have [0, 1] probability output
+                            print("{};{}".format(all_lines_test[i], ";".join(
+                                str(float(x)) for x in inv_yhat_probs[i])), file=outfile)
 
-                print("test_precision_mci = {}".format(test_precision_mci), file=sys.stderr)
-                print("test_recall_mci = {}".format(test_recall_mci), file=sys.stderr)
-                print("test_f1_mci = {}".format(test_f1_mci), file=sys.stderr)
-                print("test_accuracy_mci = {}".format(test_accuracy_mci), file=sys.stderr)
-                print("test_availability_mci = {}".format(test_availability_mci), file=sys.stderr)
-                print("naive_availability_mci = {}".format(naive_availability_mci), file=sys.stderr)
-                print("ideal_availability_mci = {}".format(ideal_availability_mci), file=sys.stderr)
+                    # aggregate by timestamp
+                    test_availability_trimmed = test_availability[:(len(test_availability)-(len(test_availability) % NUM_USERS_TEST))]
+                    naive_availability_trimmed = naive_availability[:(len(naive_availability)-(len(naive_availability) % NUM_USERS_TEST))]
+                    ideal_availability_trimmed = ideal_availability[:(len(ideal_availability)-(len(ideal_availability) % NUM_USERS_TEST))]
+                    test_availability_aggregated = [sum(x)/len(x) for x in np.reshape(test_availability_trimmed, (-1, NUM_USERS_TEST))]
+                    naive_availability_aggregated = [sum(x)/len(x) for x in np.reshape(naive_availability_trimmed, (-1, NUM_USERS_TEST))]
+                    ideal_availability_aggregated = [sum(x)/len(x) for x in np.reshape(ideal_availability_trimmed, (-1, NUM_USERS_TEST))]
+                    test_availability_trimmed = test_availability[:(len(test_availability)-(len(test_availability) % 10))]
 
-                print("{} {} {} {} {} {} {} {} {} {} {} {}".format(PROFILE, NUM_USERS, NUM_BS, n_steps, MAX_TS,
-                                                                   test_precision_mci, test_recall_mci, test_f1_mci,
-                                                                   test_accuracy_mci, test_availability_mci,
-                                                                   naive_availability_mci, ideal_availability_mci))
+                    inv_y_test_reshaped_trimmed = inv_y_test_reshaped[:(len(inv_y_test_reshaped)-(len(inv_y_test_reshaped) % (NUM_USERS_TEST * NUM_BS)))]
+                    inv_yhat_test_reshaped_trimmed = inv_yhat_test_reshaped[:(len(inv_yhat_test_reshaped)-(len(inv_yhat_test_reshaped) % (NUM_USERS_TEST * NUM_BS)))]
+                    inv_y_test_aggregated = np.reshape(inv_y_test_reshaped_trimmed, (-1, (NUM_USERS_TEST * NUM_BS)))
+                    inv_yhat_test_aggregated = np.reshape(inv_yhat_test_reshaped_trimmed, (-1, (NUM_USERS_TEST * NUM_BS)))
+
+                    test_precision_aggregated = [precision_score(y, yhat) for y, yhat in zip(inv_y_test_aggregated, inv_yhat_test_aggregated)]
+                    test_recall_aggregated = [recall_score(y, yhat) for y, yhat in zip(inv_y_test_aggregated, inv_yhat_test_aggregated)]
+                    test_f1_aggregated = [f1_score(y, yhat) for y, yhat in zip(inv_y_test_aggregated, inv_yhat_test_aggregated)]
+                    test_accuracy_aggregated = [accuracy_score(y, yhat) for y, yhat in zip(inv_y_test_aggregated, inv_yhat_test_aggregated)]
+
+                    test_precision_mci = mean_confidence_interval_v2(test_precision_aggregated)
+                    test_recall_mci = mean_confidence_interval_v2(test_recall_aggregated)
+                    test_f1_mci = mean_confidence_interval_v2(test_f1_aggregated)
+                    test_accuracy_mci = mean_confidence_interval_v2(test_accuracy_aggregated)
+                    test_availability_mci = mean_confidence_interval_v2(test_availability_aggregated)
+                    naive_availability_mci = mean_confidence_interval_v2(naive_availability_aggregated)
+                    ideal_availability_mci = mean_confidence_interval_v2(ideal_availability_aggregated)
+
+                    print("test_precision_mci = {}".format(test_precision_mci), file=sys.stderr)
+                    print("test_recall_mci = {}".format(test_recall_mci), file=sys.stderr)
+                    print("test_f1_mci = {}".format(test_f1_mci), file=sys.stderr)
+                    print("test_accuracy_mci = {}".format(test_accuracy_mci), file=sys.stderr)
+                    print("test_availability_mci = {}".format(test_availability_mci), file=sys.stderr)
+                    print("naive_availability_mci = {}".format(naive_availability_mci), file=sys.stderr)
+                    print("ideal_availability_mci = {}".format(ideal_availability_mci), file=sys.stderr)
+
+                    print("{} {} {} {} {} {} {} {} {} {} {} {} {}".format(PROFILE, NUM_USERS_TRAIN, NUM_USERS_TEST, NUM_BS, n_steps, MAX_TS,
+                                                                    test_precision_mci, test_recall_mci, test_f1_mci,
+                                                                    test_accuracy_mci, test_availability_mci,
+                                                                    naive_availability_mci, ideal_availability_mci))
